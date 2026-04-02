@@ -184,7 +184,7 @@ def get_fmp_earnings_for_ticker(ticker, target_date):
     Fetch the most recent earnings entry for a ticker from FMP stable/earnings.
     Returns a single dict or None.
     """
-    data = fmp_fetch(f'stable/earnings?symbol={ticker}')
+    data = fmp_fetch('stable/earnings', {'symbol': ticker})
     if not data or not isinstance(data, list):
         return None
     # Find the entry closest to (and on or before) target_date
