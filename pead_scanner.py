@@ -136,33 +136,89 @@ def fmp_fetch(endpoint, params=None):
         print(f'  FMP Error: {e}')
         return None
 
+def get_edgar_earnings_tickers(from_date, to_date):
+    """
+    Use SEC EDGAR full-text search to find tickers that filed 8-K Item 2.02
+    (Results of Operations = earnings release) in the given date range.
+    Returns list of (ticker, report_date) tuples.
+    Free, no API key needed. Same infrastructure as 8-K scanner.
+    """
+    import time
+    url = (
+        f'https://efts.sec.gov/LATEST/search-index?q=%22item+2.02%22'
+        f'&dateRange=custom&startdt={from_date}&enddt={to_date}'
+        f'&forms=8-K&hits.hits._source=period_of_report,entity_name,file_date,tickers'
+    )
+    try:
+        req = Request(url)
+        req.add_header('User-Agent', 'PEADScanner/1.0 kph3802@gmail.com')
+        with urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode())
+        hits = data.get('hits', {}).get('hits', [])
+        results = []
+        seen = set()
+        for hit in hits:
+            src = hit.get('_source', {})
+            tickers = src.get('tickers', [])
+            file_date = src.get('file_date', '') or src.get('period_of_report', '')
+            for t in tickers:
+                if t and t not in seen:
+                    seen.add(t)
+                    results.append((t.upper(), file_date[:10] if file_date else from_date))
+        print(f'  EDGAR Item 2.02 filings found: {len(results)} tickers')
+        return results
+    except Exception as e:
+        print(f'  EDGAR search failed: {e}')
+        return []
+
+
+def get_fmp_earnings_for_ticker(ticker, target_date):
+    """
+    Fetch the most recent earnings entry for a ticker from FMP stable/earnings.
+    Returns a single dict or None.
+    """
+    data = fmp_fetch(f'stable/earnings?symbol={ticker}')
+    if not data or not isinstance(data, list):
+        return None
+    # Find the entry closest to (and on or before) target_date
+    target = target_date if isinstance(target_date, str) else target_date.strftime('%Y-%m-%d')
+    candidates = [
+        e for e in data
+        if e.get('date', '') <= target
+        and e.get('epsActual') is not None
+        and e.get('epsEstimated') is not None
+    ]
+    if not candidates:
+        return None
+    # Most recent
+    best = max(candidates, key=lambda x: x.get('date', ''))
+    return {
+        'ticker':        ticker,
+        'report_date':   best.get('date', target),
+        'eps_actual':    best.get('epsActual'),
+        'eps_estimated': best.get('epsEstimated'),
+        'revenue_actual':    best.get('revenueActual'),
+        'revenue_estimated': best.get('revenueEstimated'),
+    }
+
+
 def get_earning_calendar(from_date, to_date):
     """
-    Fetch FMP earnings calendar for a date range.
-    Returns list of dicts with: symbol, date, eps (actual), epsEstimated, revenue, revenueEstimated
-    Only returns entries where actual EPS is present (already reported).
+    Get recent earnings reporters using SEC EDGAR Item 2.02 filings,
+    then fetch actual/estimated EPS from FMP per-ticker.
+    Falls back gracefully if EDGAR or FMP calls fail.
     """
-    data = fmp_fetch('api/v3/earning_calendar', {
-        'from': from_date,
-        'to': to_date
-    })
-    if not data or not isinstance(data, list):
+    import time
+    ticker_dates = get_edgar_earnings_tickers(from_date, to_date)
+    if not ticker_dates:
         return []
     results = []
-    for entry in data:
-        # Skip entries without actuals (not yet reported)
-        eps_actual = entry.get('eps') or entry.get('epsActual')
-        eps_estimated = entry.get('epsEstimated')
-        if eps_actual is None:
-            continue
-        results.append({
-            'ticker':        entry.get('symbol', ''),
-            'report_date':   entry.get('date', ''),
-            'eps_actual':    eps_actual,
-            'eps_estimated': eps_estimated,
-            'revenue_actual':    entry.get('revenue') or entry.get('revenueActual'),
-            'revenue_estimated': entry.get('revenueEstimated'),
-        })
+    for ticker, file_date in ticker_dates:
+        entry = get_fmp_earnings_for_ticker(ticker, file_date)
+        if entry and entry.get('eps_actual') is not None:
+            results.append(entry)
+        time.sleep(0.2)   # Rate limit: 300/min FMP starter
+    print(f'  Enriched {len(results)} of {len(ticker_dates)} EDGAR tickers with FMP EPS data')
     return results
 
 def get_current_price(ticker):
