@@ -140,14 +140,14 @@ def get_edgar_earnings_tickers(from_date, to_date):
     """
     Use SEC EDGAR full-text search to find tickers that filed 8-K Item 2.02
     (Results of Operations = earnings release) in the given date range.
-    Returns list of (ticker, report_date) tuples.
-    Free, no API key needed. Same infrastructure as 8-K scanner.
+    Parses ticker from display_names field: 'COMPANY (TICK) (CIK XXXXXXXX)'.
+    Returns list of (ticker, file_date) tuples.
     """
-    import time
+    import re as _re
     url = (
         f'https://efts.sec.gov/LATEST/search-index?q=%22item+2.02%22'
-        f'&dateRange=custom&startdt={from_date}&enddt={to_date}'
-        f'&forms=8-K&hits.hits._source=period_of_report,entity_name,file_date,tickers'
+        f'&dateRange=custom&startdt={from_date}&enddt={to_date}&forms=8-K'
+        f'&hits.hits.total.value=true'
     )
     try:
         req = Request(url)
@@ -157,20 +157,27 @@ def get_edgar_earnings_tickers(from_date, to_date):
         hits = data.get('hits', {}).get('hits', [])
         results = []
         seen = set()
+        ticker_pat = _re.compile(r'\(([A-Z]{1,5})\)\s*\(CIK')
         for hit in hits:
-            src = hit.get('_source', {})
-            tickers = src.get('tickers', [])
-            file_date = src.get('file_date', '') or src.get('period_of_report', '')
-            for t in tickers:
-                if t and t not in seen:
-                    seen.add(t)
-                    results.append((t.upper(), file_date[:10] if file_date else from_date))
-        print(f'  EDGAR Item 2.02 filings found: {len(results)} tickers')
+            src_data = hit.get('_source', {})
+            file_date = src_data.get('file_date', from_date)
+            # Filter: must contain item 2.02
+            items = src_data.get('items', [])
+            if '2.02' not in items:
+                continue
+            for display in src_data.get('display_names', []):
+                m = ticker_pat.search(display)
+                if m:
+                    ticker = m.group(1)
+                    if ticker not in seen and len(ticker) <= 5:
+                        seen.add(ticker)
+                        results.append((ticker, file_date[:10] if file_date else from_date))
+        total = data.get('hits', {}).get('total', {}).get('value', 0)
+        print(f'  EDGAR: {total} Item 2.02 filings, {len(results)} unique tickers extracted')
         return results
     except Exception as e:
         print(f'  EDGAR search failed: {e}')
         return []
-
 
 def get_fmp_earnings_for_ticker(ticker, target_date):
     """
