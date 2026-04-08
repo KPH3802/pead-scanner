@@ -292,10 +292,24 @@ def is_q4_excluded(report_date_str):
     except ValueError:
         return False
 
+def assign_pead_score(surprise_pct, direction):
+    """
+    Path B scoring: EPS surprise magnitude -> Score 2/3 for position sizing.
+    BULL: 5-9.9% beat -> Score 2 (3%),  10%+ beat -> Score 3 (5%)
+    BEAR: all buckets -> Score 2 (valid signal, smaller alpha than BULL)
+    Based on pead_scoring.py backtest (2018-2026, 9,653 trades).
+    """
+    abs_surp = abs(surprise_pct)
+    if direction == 'BULL':
+        return 2 if abs_surp < 10.0 else 3
+    else:  # BEAR
+        return 2
+
+
 def detect_signals(calendar_entries):
     """
     Filter calendar entries into BULL and BEAR signals.
-    Returns list of signal dicts.
+    Returns list of signal dicts with score field (Path B scoring).
     """
     signals = []
     for entry in calendar_entries:
@@ -303,22 +317,18 @@ def detect_signals(calendar_entries):
         report_date = entry['report_date']
         eps_actual  = entry['eps_actual']
         eps_est     = entry['eps_estimated']
-
         if not is_valid_ticker(ticker):
             continue
         if not report_date:
             continue
-
         # Q4 exclusion: Jan/Feb reports reverse the signal
         if is_q4_excluded(report_date):
             print(f'  {ticker}: Q4 exclusion ({report_date}) -- skipped')
             continue
-
         # Compute surprise
         surprise = compute_surprise(eps_actual, eps_est, MIN_ABS_EPS)
         if surprise is None:
             continue
-
         # Apply thresholds
         if surprise >= BEAT_THRESHOLD:
             direction = 'BULL'
@@ -328,7 +338,7 @@ def detect_signals(calendar_entries):
             direction = 'BEAR'
         else:
             continue
-
+        score = assign_pead_score(round(surprise, 2), direction)
         signals.append({
             'ticker':        ticker,
             'report_date':   report_date,
@@ -336,13 +346,10 @@ def detect_signals(calendar_entries):
             'eps_estimated': eps_est,
             'surprise_pct':  round(surprise, 2),
             'direction':     direction,
+            'score':         score,
         })
-
     return signals
 
-# ============================================================
-# DEDUPLICATION + ENRICHMENT
-# ============================================================
 
 def filter_new_signals(conn, signals):
     """Remove signals already in the database (already emailed)."""
@@ -415,20 +422,22 @@ DIRECTION_LABEL = {
 }
 
 def build_email_subject(new_signals):
-    """Build email subject parseable by IB autotrader."""
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    bulls = [s for s in new_signals if s['direction'] == 'BULL']
-    bears = [s for s in new_signals if s['direction'] == 'BEAR']
+    """Build email subject parseable by IB autotrader.
+    Score suffix (:2 or :3) sets position size via Path B scoring.
+    """
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    bulls = [s for s in new_signals if s["direction"] == "BULL"]
+    bears = [s for s in new_signals if s["direction"] == "BEAR"]
     parts = []
     if bulls:
-        tickers = ', '.join(s['ticker'] for s in bulls)
-        parts.append(f'PEAD BULL: {tickers}')
+        tickers = ", ".join(str(s["ticker"]) + ":" + str(s.get("score", 3)) for s in bulls)
+        parts.append("PEAD BULL: " + tickers)
     if bears:
-        tickers = ', '.join(s['ticker'] for s in bears)
-        parts.append(f'PEAD BEAR: {tickers}')
+        tickers = ", ".join(str(s["ticker"]) + ":" + str(s.get("score", 2)) for s in bears)
+        parts.append("PEAD BEAR: " + tickers)
     if parts:
-        return ' | '.join(parts)
-    return f'PEAD Scanner -- No signals ({today})'
+        return " | ".join(parts)
+    return "PEAD Scanner -- No signals (" + today + ")"
 
 def build_email_html(new_signals, recent_signals):
     """Build rich HTML email showing BULL and BEAR signals."""
