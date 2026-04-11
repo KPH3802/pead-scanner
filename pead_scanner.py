@@ -50,6 +50,24 @@ MIN_ABS_EPS    = config.MIN_ABS_EPS
 Q4_MONTHS      = set(config.Q4_EXCLUDE_MONTHS)
 ENABLE_BEAR    = config.ENABLE_BEAR
 
+# ---------------------------------------------------------------------------
+# Signal Intelligence — live logging
+# ---------------------------------------------------------------------------
+def log_signal_intelligence(scan_date, scanner, ticker, direction, fired,
+                             signal_strength=None, signal_bucket=None,
+                             regime_filter_passed=None, regime_value=None,
+                             score=None):
+    try:
+        import sqlite3 as _sl
+        db = os.path.expanduser('~/signal_intelligence.db')
+        c = _sl.connect(db)
+        c.execute('CREATE TABLE IF NOT EXISTS signal_log (id INTEGER PRIMARY KEY AUTOINCREMENT, scan_date TEXT, scanner TEXT, ticker TEXT, direction TEXT, fired INTEGER, signal_strength REAL, signal_bucket TEXT, regime_filter_passed INTEGER, regime_value REAL, score INTEGER, autotrader_acted INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
+        c.execute('INSERT INTO signal_log (scan_date,scanner,ticker,direction,fired,signal_strength,signal_bucket,regime_filter_passed,regime_value,score) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                  (scan_date,scanner,ticker,direction,fired,signal_strength,signal_bucket,regime_filter_passed,regime_value,score))
+        c.commit(); c.close()
+    except Exception:
+        pass
+
 # ============================================================
 # TRADING DAY UTILITIES
 # ============================================================
@@ -329,16 +347,39 @@ def detect_signals(calendar_entries):
         surprise = compute_surprise(eps_actual, eps_est, MIN_ABS_EPS)
         if surprise is None:
             continue
+        # Bucket for logging
+        abs_s = abs(surprise)
+        if surprise <= -10:
+            _bucket = '<=-10'
+        elif surprise < 0:
+            _bucket = '-10-0'
+        elif surprise < 10:
+            _bucket = '0-10'
+        else:
+            _bucket = '10+'
         # Apply thresholds
         if surprise >= BEAT_THRESHOLD:
             direction = 'BULL'
         elif surprise <= -MISS_THRESHOLD:
             if not ENABLE_BEAR:
+                log_signal_intelligence(report_date, 'PEAD_BEAR', ticker, 'SHORT', 0,
+                                        signal_strength=round(surprise, 2), signal_bucket=_bucket)
                 continue
             direction = 'BEAR'
         else:
+            # Below threshold — log as not fired
+            _dir = 'BUY' if surprise >= 0 else 'SHORT'
+            _scanner = 'PEAD_BULL' if surprise >= 0 else 'PEAD_BEAR'
+            log_signal_intelligence(report_date, _scanner, ticker, _dir, 0,
+                                    signal_strength=round(surprise, 2), signal_bucket=_bucket)
             continue
         score = assign_pead_score(round(surprise, 2), direction)
+        # Log fired signal
+        _ib_dir = 'BUY' if direction == 'BULL' else 'SHORT'
+        _scanner = 'PEAD_BULL' if direction == 'BULL' else 'PEAD_BEAR'
+        log_signal_intelligence(report_date, _scanner, ticker, _ib_dir, 1,
+                                signal_strength=round(surprise, 2), signal_bucket=_bucket,
+                                score=score)
         signals.append({
             'ticker':        ticker,
             'report_date':   report_date,
