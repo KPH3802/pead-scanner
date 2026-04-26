@@ -702,7 +702,7 @@ def log_scan(conn, target_date, reports_found, signals_found, new_signals, email
 def run_scan(backfill_days=None, dry_run=False):
     """
     Main scan loop.
-    Targets reports from exactly 2 trading days ago (matches backtest entry_delay=2).
+    Targets reports from exactly 1 trading day ago (matches backtest entry_delay=2).
     backfill_days: if set, scan the last N calendar days (dedup prevents re-emailing).
     """
     print(f"{'='*60}")
@@ -718,10 +718,10 @@ def run_scan(backfill_days=None, dry_run=False):
         to_date_dt   = datetime.utcnow().date() - timedelta(days=1)
         print(f'Backfill mode: scanning {from_date_dt} to {to_date_dt}')
     else:
-        target_date  = n_trading_days_ago(2)
+        target_date  = n_trading_days_ago(1)
         from_date_dt = target_date - timedelta(days=1)   # 1-day buffer
         to_date_dt   = target_date
-        print(f'Target report date: {target_date}  (2 trading days ago)')
+        print(f'Target report date: {target_date}  (1 trading day ago)')
 
     from_str, to_str = date_range_str(from_date_dt, to_date_dt)
     print(f'Fetching calendar: {from_str} to {to_str}')
