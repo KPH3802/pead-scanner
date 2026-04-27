@@ -6,3 +6,4 @@ pead_signals.db
 __pycache__/
 *.pyc
 .DS_Store
+*.log
